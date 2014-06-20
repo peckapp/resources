@@ -1,39 +1,10 @@
 require 'mechanize'
 require 'nokogiri'
+require 'feedjira'
 require 'uri'
 require 'bloomfilter-rb'
 
 class RSSCrawler
-
-  def self.acceptable_link_format?(link)
-    begin
-      if link.uri.to_s.match(/#/) || link.uri.to_s.empty? then return false end # handles anchor links within the page
-      if (link.uri.scheme != "http") && (link.uri.scheme != "http") then return false end # handles other protocols like tel: and ftp:
-      # prevents download of media files, should be a better way to do this than by explicit checks for each type for all URIs
-      if link.uri.to_s.match(/.pdf/) ||
-         link.uri.to_s.match(/.jgp/) ||
-         link.uri.to_s.match(/.jgp2/) ||
-         link.uri.to_s.match(/.png/) ||
-         link.uri.to_s.match(/.gif/)
-      then
-        return false
-      end
-    rescue
-      return false
-    end
-    true
-  end
-
-  def self.within_domain?(link)
-    if link.relative? then return true end # handles relative links within the site
-    @root_uri.route_to(link).host ? false : true
-  end
-
-  def self.rss?(link)
-    link.to_s.match(/rss/)
-  end
-
-  puts 'running RSS crawler'
 
   @agent = Mechanize.new
   @crawl_queue = Array.new # using an array to prevent special threading features of actual queues in ruby
@@ -78,6 +49,10 @@ class RSSCrawler
           puts "RSS: " + uri.to_s
           puts "********************************"
           @rss_feeds << uri
+          # spawn a new thread to parse the rss feed site
+          rss_scrape = Thread.new {
+            self.scrape_uri(uri.to_s)
+          }
         end
 
         next unless self.within_domain?(uri)
@@ -89,10 +64,56 @@ class RSSCrawler
     end
   end
 
+  def self.scrape_uri(uri)
+    feed = Feedjira::Feed.fetch_and_parse(uri)
+
+    feed.entries.each { |entry|
+      entry_h = {}
+      entry_h[:title] = entry.title
+      entry_h[:url] = entry.url
+      html = Nokogiri::HTML(entry.summary)
+      entry_h[:summary] = {}
+      html.xpath("//b").each { |t|
+        val = t.next.text.match(/[[:alnum:]]/) ? t.next : t.next.next
+        entry_h[:summary][t.text] = val.text
+      }
+      puts "\n#{entry_h}"
+    }
+  end
+
+  def self.acceptable_link_format?(link)
+    begin
+      if link.uri.to_s.match(/#/) || link.uri.to_s.empty? then return false end # handles anchor links within the page
+      if (link.uri.scheme != "http") && (link.uri.scheme != "http") then return false end # handles other protocols like tel: and ftp:
+      # prevents download of media files, should be a better way to do this than by explicit checks for each type for all URIs
+      if link.uri.to_s.match(/.pdf/) ||
+         link.uri.to_s.match(/.jgp/) ||
+         link.uri.to_s.match(/.jgp2/) ||
+         link.uri.to_s.match(/.png/) ||
+         link.uri.to_s.match(/.gif/)
+      then
+        return false
+      end
+    rescue
+      return false
+    end
+    true
+  end
+
+  def self.within_domain?(link)
+    if link.relative? then return true end # handles relative links within the site
+    @root_uri.route_to(link).host ? false : true
+  end
+
+  def self.rss?(link)
+    link.to_s.match(/rss/)
+  end
+
   if __FILE__ == $0
 
     # starts the loop crawling the website
     begin
+      puts 'running RSS crawler'
       self.crawl_loop
     rescue Interrupt
       puts "\nended crawl"
