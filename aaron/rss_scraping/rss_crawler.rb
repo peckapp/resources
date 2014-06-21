@@ -3,10 +3,14 @@ require 'nokogiri'
 require 'feedjira'
 require 'uri'
 require 'bloomfilter-rb'
+require 'logger'
 
 class RSSCrawler
 
   @agent = Mechanize.new
+  @agent.read_timeout = 8
+  @agent.open_timeout = 8
+
   @crawl_queue = Array.new # using an array to prevent special threading features of actual queues in ruby
   # m = 150,000, k = 11, seed = 666
   @bf = BloomFilter::Native.new(size: 150000,hashes: 11,seed: 1)
@@ -16,18 +20,37 @@ class RSSCrawler
   root_page = @agent.get(@root_url)
   @crawl_queue.insert(0,root_page)
 
+  @pages_crawled = 0
+
   @rss_feeds = []
 
   def self.crawl_loop
+
+    logger = Logger.new('logfile.log')
+    logger.level = Logger::DEBUG
+
+    logger.debug("Created logger")
+    logger.info("Program started")
+    logger.warn("Nothing to do!")
+
+    path = "a_non_existent_file"
+
     while ! @crawl_queue.empty? do
       page = @crawl_queue.pop
 
+      if page.kind_of? Mechanize::Image
+        puts "Image in crawl queue for uri: #{page.uri}"
+      end
+
       next unless page.kind_of? Mechanize::Page
 
-      puts "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||"
-      puts "queue contains: " + @crawl_queue.count.to_s
-      puts "Starting page: " + page.title.to_s
-      puts "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||"
+      @pages_crawled += 1
+
+      logger.info "\n\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||"
+      logger.info "queue contains: #{@crawl_queue.count.to_s} with #{@pages_crawled} scraped so far"
+      logger.info "Starting page: " + page.title.to_s
+      logger.info "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n\n"
+
 
       page.links.each do |l|
 
@@ -37,17 +60,17 @@ class RSSCrawler
           next
         end
         @bf.insert(l.href.to_s)
-        print "HREF: ~#{l.href}~"
+        logger.info "HREF: ~#{l.href}~"
 
         next unless self.acceptable_link_format?(l)
 
         uri = l.uri
-        puts " <<<< LINK"
+        logger.info "LINK ^^^^^^^^^^^^^^^^^^^"
 
         if self.rss?(uri)
-          puts "********************************"
-          puts "RSS: " + uri.to_s
-          puts "********************************"
+          logger.info "********************************"
+          logger.info "RSS: " + uri.to_s
+          logger.info "********************************"
           @rss_feeds << uri
           # spawn a new thread to parse the rss feed site
           rss_scrape = Thread.new {
@@ -60,10 +83,14 @@ class RSSCrawler
         new_page = l.click
         @crawl_queue.insert(0,new_page)
 
+        sleep 2.0 + (2.0 * rand)
+
       end
     end
+    logger.close
   end
 
+  # scrapes a given rss feed indicated by the string passed in of its uri
   def self.scrape_uri(uri)
     feed = Feedjira::Feed.fetch_and_parse(uri)
 
@@ -77,6 +104,7 @@ class RSSCrawler
         val = t.next.text.match(/[[:alnum:]]/) ? t.next : t.next.next
         entry_h[:summary][t.text] = val.text
       }
+      # replace this with a write to a seperate file
       puts "\n#{entry_h}"
     }
   end
@@ -86,14 +114,7 @@ class RSSCrawler
       if link.uri.to_s.match(/#/) || link.uri.to_s.empty? then return false end # handles anchor links within the page
       if (link.uri.scheme != "http") && (link.uri.scheme != "http") then return false end # handles other protocols like tel: and ftp:
       # prevents download of media files, should be a better way to do this than by explicit checks for each type for all URIs
-      if link.uri.to_s.match(/.pdf/) ||
-         link.uri.to_s.match(/.jgp/) ||
-         link.uri.to_s.match(/.jgp2/) ||
-         link.uri.to_s.match(/.png/) ||
-         link.uri.to_s.match(/.gif/)
-      then
-        return false
-      end
+      if link.uri.to_s.match(/.pdf|.jgp|.jgp2|.png|.gif/) then return false end
     rescue
       return false
     end
